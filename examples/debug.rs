@@ -1,7 +1,9 @@
 extern crate spin;
 
+use spin::NoOpSchedulerInfluence;
+
 fn main() {
-    let mutex = spin::Mutex::new(42);
+    let mutex: spin::Mutex<i32, NoOpSchedulerInfluence> = spin::Mutex::new(42);
     println!("{:?}", mutex);
     {
         let x = mutex.lock();

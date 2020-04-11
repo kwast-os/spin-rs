@@ -1,4 +1,5 @@
 #![crate_type = "lib"]
+#![feature(const_fn)]
 #![warn(missing_docs)]
 
 //! Synchronization primitives based on spinning
@@ -12,7 +13,9 @@ extern crate std;
 pub use mutex::*;
 pub use rw_lock::*;
 pub use once::*;
+pub use scheduler::*;
 
 mod mutex;
 mod rw_lock;
 mod once;
+mod scheduler;
