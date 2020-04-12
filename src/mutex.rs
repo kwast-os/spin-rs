@@ -134,11 +134,11 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
 {
     fn obtain_lock(&self) -> S
     {
-        let mut state = S::preempt_disable();
+        let mut state = S::activate();
 
         while self.lock.compare_and_swap(false, true, Ordering::Acquire) != false
         {
-            state.preempt_enable();
+            drop(state);
 
             // Wait until the lock looks unlocked before retrying
             while self.lock.load(Ordering::Relaxed)
@@ -146,7 +146,7 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
                 cpu_relax();
             }
 
-            state = S::preempt_disable();
+            state = S::activate();
         }
 
         state
@@ -194,7 +194,7 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
     /// a guard within Some.
     pub fn try_lock(&self) -> Option<MutexGuard<T, S>>
     {
-        let state = S::preempt_disable();
+        let state = S::activate();
         if self.lock.compare_and_swap(false, true, Ordering::Acquire) == false
         {
             Some(
@@ -207,7 +207,6 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
         }
         else
         {
-            state.preempt_enable();
             None
         }
     }
@@ -269,7 +268,6 @@ impl<'a, T: ?Sized, S: SchedulerInfluence> Drop for MutexGuard<'a, T, S>
     fn drop(&mut self)
     {
         self.lock.store(false, Ordering::Release);
-        self.state.preempt_enable();
     }
 }
 

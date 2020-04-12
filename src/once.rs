@@ -60,7 +60,7 @@ impl<T> Once<T> {
         Self::INIT
     }
 
-    fn force_get<'a>(&'a self) -> &'a T {
+    fn force_get(&self) -> &T {
         match unsafe { &*self.data.get() }.as_ref() {
             None    => unsafe { unreachable() },
             Some(p) => p,
@@ -95,7 +95,7 @@ impl<T> Once<T> {
     /// # 2
     /// }
     /// ```
-    pub fn call_once<'a, F>(&'a self, builder: F) -> &'a T
+    pub fn call_once<F>(&self, builder: F) -> &T
         where F: FnOnce() -> T
     {
         let mut status = self.state.load(Ordering::SeqCst);
@@ -133,7 +133,7 @@ impl<T> Once<T> {
     }
 
     /// Returns a pointer iff the `Once` was previously initialized
-    pub fn try<'a>(&'a self) -> Option<&'a T> {
+    pub fn try(&self) -> Option<&T> {
         match self.state.load(Ordering::SeqCst) {
             COMPLETE => Some(self.force_get()),
             _        => None,
@@ -142,7 +142,7 @@ impl<T> Once<T> {
 
     /// Like try, but will spin if the `Once` is in the process of being
     /// initialized
-    pub fn wait<'a>(&'a self) -> Option<&'a T> {
+    pub fn wait(&self) -> Option<&T> {
         loop {
             match self.state.load(Ordering::SeqCst) {
                 INCOMPLETE => return None,

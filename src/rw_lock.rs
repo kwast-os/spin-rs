@@ -88,7 +88,7 @@ pub struct RwLockWriteGuard<'a, T: 'a + ?Sized, S: SchedulerInfluence> {
     data: NonNull<T>,
     #[doc(hidden)]
     _invariant: PhantomData<&'a mut T>,
-    state: S,
+    state: Option<S>,
 }
 
 /// A guard from which the protected data can be read, and can be upgraded
@@ -105,7 +105,7 @@ pub struct RwLockUpgradeableGuard<'a, T: 'a + ?Sized, S: SchedulerInfluence> {
     data: NonNull<T>,
     #[doc(hidden)]
     _invariant: PhantomData<&'a mut T>,
-    state: S,
+    state: Option<S>,
 }
 
 // Same unsafe impls as `std::sync::RwLock`
@@ -206,7 +206,7 @@ impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
     /// ```
     #[inline]
     pub fn try_read(&self) -> Option<RwLockReadGuard<T, S>> {
-        let state = S::preempt_disable();
+        let state = S::activate();
         let value = self.lock.fetch_add(READER, Ordering::Acquire);
 
         // We check the UPGRADED bit here so that new readers are prevented when an UPGRADED lock is held.
@@ -214,7 +214,6 @@ impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
         if value & (WRITER | UPGRADED) != 0 {
             // Lock is taken, undo.
             self.lock.fetch_sub(READER, Ordering::Release);
-            state.preempt_enable();
             None
         } else {
             Some(RwLockReadGuard {
@@ -251,7 +250,7 @@ impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
 
     #[inline(always)]
     fn try_write_internal(&self, strong: bool) -> Option<RwLockWriteGuard<T, S>> {
-        let state = S::preempt_disable();
+        let state = S::activate();
         if compare_exchange(
             &self.lock,
             0,
@@ -266,10 +265,9 @@ impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
                 lock: &self.lock,
                 data: unsafe { NonNull::new_unchecked(self.data.get()) },
                 _invariant: PhantomData,
-                state,
+                state: Some(state),
             })
         } else {
-            state.preempt_enable();
             None
         }
     }
@@ -343,16 +341,15 @@ impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
     /// Tries to obtain an upgradeable lock guard.
     #[inline]
     pub fn try_upgradeable_read(&self) -> Option<RwLockUpgradeableGuard<T, S>> {
-        let state = S::preempt_disable();
+        let state = S::activate();
         if self.lock.fetch_or(UPGRADED, Ordering::Acquire) & (WRITER | UPGRADED) == 0 {
             Some(RwLockUpgradeableGuard {
                 lock: &self.lock,
                 data: unsafe { NonNull::new_unchecked(self.data.get()) },
                 _invariant: PhantomData,
-                state,
+                state: Some(state),
             })
         } else {
-            state.preempt_enable();
             // We can't unflip the UPGRADED bit back just yet as there is another upgradeable or write lock.
             // When they unlock, they will clear the bit.
             None
@@ -398,7 +395,7 @@ impl<T: ?Sized + Default, S: SchedulerInfluence> Default for RwLock<T, S> {
 
 impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockUpgradeableGuard<'rwlock, T, S> {
     #[inline(always)]
-    fn try_upgrade_internal(self, strong: bool) -> Result<RwLockWriteGuard<'rwlock, T, S>, Self> {
+    fn try_upgrade_internal(mut self, strong: bool) -> Result<RwLockWriteGuard<'rwlock, T, S>, Self> {
         if compare_exchange(
             &self.lock,
             UPGRADED,
@@ -414,7 +411,7 @@ impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockUpgradeableGuard<'rwlock, 
                 lock: &self.lock,
                 data: self.data,
                 _invariant: PhantomData,
-                state: self.state,
+                state: self.state.take(),
             });
 
             // Forget the old guard so its destructor doesn't run
@@ -479,14 +476,14 @@ impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockUpgradeableGuard<'rwlock, 
     /// assert!(mylock.try_read().is_some());
     /// assert_eq!(*readable, 1);
     /// ```
-    pub fn downgrade(self) -> RwLockReadGuard<'rwlock, T, S> {
+    pub fn downgrade(mut self) -> RwLockReadGuard<'rwlock, T, S> {
         // Reserve the read guard for ourselves
         self.lock.fetch_add(READER, Ordering::Acquire);
 
         RwLockReadGuard {
             lock: &self.lock,
             data: self.data,
-            state: self.state,
+            state: self.state.take().unwrap(),
         }
 
         // Dropping self removes the UPGRADED bit
@@ -508,14 +505,14 @@ impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockWriteGuard<'rwlock, T, S> 
     /// assert_eq!(*readable, 1);
     /// ```
     #[inline]
-    pub fn downgrade(self) -> RwLockReadGuard<'rwlock, T, S> {
+    pub fn downgrade(mut self) -> RwLockReadGuard<'rwlock, T, S> {
         // Reserve the read guard for ourselves
         self.lock.fetch_add(READER, Ordering::Acquire);
 
         RwLockReadGuard {
             lock: &self.lock,
             data: self.data,
-            state: self.state,
+            state: self.state.take().unwrap(),
         }
 
         // Dropping self removes the WRITER bit
