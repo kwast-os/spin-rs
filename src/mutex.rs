@@ -87,7 +87,7 @@ pub struct MutexGuard<'a, T: ?Sized + 'a, S: SchedulerInfluence>
 {
     lock: &'a AtomicBool,
     data: &'a mut T,
-    _marker: PhantomData<S>,
+    state: S,
 }
 
 // Same unsafe impls as `std::sync::Mutex`
@@ -132,13 +132,13 @@ impl<T, S: SchedulerInfluence> Mutex<T, S>
 
 impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
 {
-    fn obtain_lock(&self)
+    fn obtain_lock(&self) -> S
     {
-        S::preempt_disable();
+        let mut state = S::preempt_disable();
 
         while self.lock.compare_and_swap(false, true, Ordering::Acquire) != false
         {
-            S::preempt_enable();
+            state.preempt_enable();
 
             // Wait until the lock looks unlocked before retrying
             while self.lock.load(Ordering::Relaxed)
@@ -146,8 +146,10 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
                 cpu_relax();
             }
 
-            S::preempt_disable();
+            state = S::preempt_disable();
         }
+
+        state
     }
 
     /// Locks the spinlock and returns a guard.
@@ -168,12 +170,12 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
     /// ```
     pub fn lock(&self) -> MutexGuard<T, S>
     {
-        self.obtain_lock();
+        let state = self.obtain_lock();
         MutexGuard
         {
             lock: &self.lock,
             data: unsafe { &mut *self.data.get() },
-            _marker: PhantomData,
+            state,
         }
     }
 
@@ -192,18 +194,20 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
     /// a guard within Some.
     pub fn try_lock(&self) -> Option<MutexGuard<T, S>>
     {
+        let state = S::preempt_disable();
         if self.lock.compare_and_swap(false, true, Ordering::Acquire) == false
         {
             Some(
                 MutexGuard {
                     lock: &self.lock,
                     data: unsafe { &mut *self.data.get() },
-                    _marker: PhantomData,
+                    state,
                 }
             )
         }
         else
         {
+            state.preempt_enable();
             None
         }
     }
@@ -265,6 +269,8 @@ impl<'a, T: ?Sized, S: SchedulerInfluence> Drop for MutexGuard<'a, T, S>
     fn drop(&mut self)
     {
         self.lock.store(false, Ordering::Release);
+        self.state.preempt_enable();
+        S::check_schedule_flag();
     }
 }
 
