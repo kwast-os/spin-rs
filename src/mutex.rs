@@ -270,7 +270,6 @@ impl<'a, T: ?Sized, S: SchedulerInfluence> Drop for MutexGuard<'a, T, S>
     {
         self.lock.store(false, Ordering::Release);
         self.state.preempt_enable();
-        S::check_schedule_flag();
     }
 }
 

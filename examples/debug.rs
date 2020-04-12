@@ -10,7 +10,7 @@ fn main() {
         println!("{:?}, {:?}", mutex, *x);
     }
 
-    let rwlock = spin::RwLock::new(42);
+    let rwlock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(42);
     println!("{:?}", rwlock);
     {
         let x = rwlock.read();

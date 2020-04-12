@@ -6,6 +6,7 @@ use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::sync::atomic::{spin_loop_hint as cpu_relax, AtomicUsize, Ordering};
+use SchedulerInfluence;
 
 /// A reader-writer lock
 ///
@@ -38,8 +39,9 @@ use core::sync::atomic::{spin_loop_hint as cpu_relax, AtomicUsize, Ordering};
 ///
 /// ```
 /// use spin;
+/// use spin::NoOpSchedulerInfluence;
 ///
-/// let lock = spin::RwLock::new(5);
+/// let lock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(5);
 ///
 /// // many reader locks can be held at once
 /// {
@@ -56,8 +58,9 @@ use core::sync::atomic::{spin_loop_hint as cpu_relax, AtomicUsize, Ordering};
 ///     assert_eq!(*w, 6);
 /// } // write lock is dropped here
 /// ```
-pub struct RwLock<T: ?Sized> {
+pub struct RwLock<T: ?Sized, S: SchedulerInfluence> {
     lock: AtomicUsize,
+    _marker: PhantomData<S>,
     data: UnsafeCell<T>,
 }
 
@@ -70,20 +73,22 @@ const WRITER: usize = 1;
 /// When the guard falls out of scope it will decrement the read count,
 /// potentially releasing the lock.
 #[derive(Debug)]
-pub struct RwLockReadGuard<'a, T: 'a + ?Sized> {
+pub struct RwLockReadGuard<'a, T: 'a + ?Sized, S: SchedulerInfluence> {
     lock: &'a AtomicUsize,
     data: NonNull<T>,
+    state: S,
 }
 
 /// A guard to which the protected data can be written
 ///
 /// When the guard falls out of scope it will release the lock.
 #[derive(Debug)]
-pub struct RwLockWriteGuard<'a, T: 'a + ?Sized> {
+pub struct RwLockWriteGuard<'a, T: 'a + ?Sized, S: SchedulerInfluence> {
     lock: &'a AtomicUsize,
     data: NonNull<T>,
     #[doc(hidden)]
     _invariant: PhantomData<&'a mut T>,
+    state: S,
 }
 
 /// A guard from which the protected data can be read, and can be upgraded
@@ -95,26 +100,28 @@ pub struct RwLockWriteGuard<'a, T: 'a + ?Sized> {
 ///
 /// When the guard falls out of scope it will release the lock.
 #[derive(Debug)]
-pub struct RwLockUpgradeableGuard<'a, T: 'a + ?Sized> {
+pub struct RwLockUpgradeableGuard<'a, T: 'a + ?Sized, S: SchedulerInfluence> {
     lock: &'a AtomicUsize,
     data: NonNull<T>,
     #[doc(hidden)]
     _invariant: PhantomData<&'a mut T>,
+    state: S,
 }
 
 // Same unsafe impls as `std::sync::RwLock`
-unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
-unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
+unsafe impl<T: ?Sized + Send, S: SchedulerInfluence> Send for RwLock<T, S> {}
+unsafe impl<T: ?Sized + Send + Sync, S: SchedulerInfluence> Sync for RwLock<T, S> {}
 
-impl<T> RwLock<T> {
+impl<T, S: SchedulerInfluence> RwLock<T, S> {
     /// Creates a new spinlock wrapping the supplied data.
     ///
     /// May be used statically:
     ///
     /// ```
     /// use spin;
+    /// use spin::NoOpSchedulerInfluence;
     ///
-    /// static RW_LOCK: spin::RwLock<()> = spin::RwLock::new(());
+    /// static RW_LOCK: spin::RwLock<(), NoOpSchedulerInfluence> = spin::RwLock::new(());
     ///
     /// fn demo() {
     ///     let lock = RW_LOCK.read();
@@ -123,9 +130,10 @@ impl<T> RwLock<T> {
     /// }
     /// ```
     #[inline]
-    pub const fn new(user_data: T) -> RwLock<T> {
+    pub const fn new(user_data: T) -> RwLock<T, S> {
         RwLock {
             lock: AtomicUsize::new(0),
+            _marker: PhantomData,
             data: UnsafeCell::new(user_data),
         }
     }
@@ -140,7 +148,7 @@ impl<T> RwLock<T> {
     }
 }
 
-impl<T: ?Sized> RwLock<T> {
+impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
     /// Locks this rwlock with shared read access, blocking the current thread
     /// until it can be acquired.
     ///
@@ -154,7 +162,8 @@ impl<T: ?Sized> RwLock<T> {
     /// once it is dropped.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     /// {
     ///     let mut data = mylock.read();
     ///     // The lock is now locked and the data can be read
@@ -163,7 +172,7 @@ impl<T: ?Sized> RwLock<T> {
     /// }
     /// ```
     #[inline]
-    pub fn read(&self) -> RwLockReadGuard<T> {
+    pub fn read(&self) -> RwLockReadGuard<T, S> {
         loop {
             match self.try_read() {
                 Some(guard) => return guard,
@@ -182,20 +191,22 @@ impl<T: ?Sized> RwLock<T> {
     /// or writers will acquire the lock first.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     /// {
     ///     match mylock.try_read() {
     ///         Some(data) => {
     ///             // The lock is now locked and the data can be read
     ///             println!("{}", *data);
     ///             // The lock is dropped
-    ///         },
+    ///         }
     ///         None => (), // no cigar
     ///     };
     /// }
     /// ```
     #[inline]
-    pub fn try_read(&self) -> Option<RwLockReadGuard<T>> {
+    pub fn try_read(&self) -> Option<RwLockReadGuard<T, S>> {
+        let state = S::preempt_disable();
         let value = self.lock.fetch_add(READER, Ordering::Acquire);
 
         // We check the UPGRADED bit here so that new readers are prevented when an UPGRADED lock is held.
@@ -203,11 +214,13 @@ impl<T: ?Sized> RwLock<T> {
         if value & (WRITER | UPGRADED) != 0 {
             // Lock is taken, undo.
             self.lock.fetch_sub(READER, Ordering::Release);
+            state.preempt_enable();
             None
         } else {
             Some(RwLockReadGuard {
                 lock: &self.lock,
                 data: unsafe { NonNull::new_unchecked(self.data.get()) },
+                state,
             })
         }
     }
@@ -237,7 +250,8 @@ impl<T: ?Sized> RwLock<T> {
     }
 
     #[inline(always)]
-    fn try_write_internal(&self, strong: bool) -> Option<RwLockWriteGuard<T>> {
+    fn try_write_internal(&self, strong: bool) -> Option<RwLockWriteGuard<T, S>> {
+        let state = S::preempt_disable();
         if compare_exchange(
             &self.lock,
             0,
@@ -252,8 +266,10 @@ impl<T: ?Sized> RwLock<T> {
                 lock: &self.lock,
                 data: unsafe { NonNull::new_unchecked(self.data.get()) },
                 _invariant: PhantomData,
+                state,
             })
         } else {
+            state.preempt_enable();
             None
         }
     }
@@ -268,7 +284,8 @@ impl<T: ?Sized> RwLock<T> {
     /// when dropped.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     /// {
     ///     let mut data = mylock.write();
     ///     // The lock is now locked and the data can be written
@@ -277,7 +294,7 @@ impl<T: ?Sized> RwLock<T> {
     /// }
     /// ```
     #[inline]
-    pub fn write(&self) -> RwLockWriteGuard<T> {
+    pub fn write(&self) -> RwLockWriteGuard<T, S> {
         loop {
             match self.try_write_internal(false) {
                 Some(guard) => return guard,
@@ -293,27 +310,28 @@ impl<T: ?Sized> RwLock<T> {
     /// returned.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     /// {
     ///     match mylock.try_write() {
     ///         Some(mut data) => {
     ///             // The lock is now locked and the data can be written
     ///             *data += 1;
     ///             // The lock is implicitly dropped
-    ///         },
+    ///         }
     ///         None => (), // no cigar
     ///     };
     /// }
     /// ```
     #[inline]
-    pub fn try_write(&self) -> Option<RwLockWriteGuard<T>> {
+    pub fn try_write(&self) -> Option<RwLockWriteGuard<T, S>> {
         self.try_write_internal(true)
     }
 
     /// Obtain a readable lock guard that can later be upgraded to a writable lock guard.
     /// Upgrades can be done through the [`RwLockUpgradeableGuard::upgrade`](RwLockUpgradeableGuard::upgrade) method.
     #[inline]
-    pub fn upgradeable_read(&self) -> RwLockUpgradeableGuard<T> {
+    pub fn upgradeable_read(&self) -> RwLockUpgradeableGuard<T, S> {
         loop {
             match self.try_upgradeable_read() {
                 Some(guard) => return guard,
@@ -324,14 +342,17 @@ impl<T: ?Sized> RwLock<T> {
 
     /// Tries to obtain an upgradeable lock guard.
     #[inline]
-    pub fn try_upgradeable_read(&self) -> Option<RwLockUpgradeableGuard<T>> {
+    pub fn try_upgradeable_read(&self) -> Option<RwLockUpgradeableGuard<T, S>> {
+        let state = S::preempt_disable();
         if self.lock.fetch_or(UPGRADED, Ordering::Acquire) & (WRITER | UPGRADED) == 0 {
             Some(RwLockUpgradeableGuard {
                 lock: &self.lock,
                 data: unsafe { NonNull::new_unchecked(self.data.get()) },
                 _invariant: PhantomData,
+                state,
             })
         } else {
+            state.preempt_enable();
             // We can't unflip the UPGRADED bit back just yet as there is another upgradeable or write lock.
             // When they unlock, they will clear the bit.
             None
@@ -346,7 +367,8 @@ impl<T: ?Sized> RwLock<T> {
    /// # Examples
    ///
    /// ```
-   /// let mut lock = spin::RwLock::new(0);
+   /// use spin::NoOpSchedulerInfluence;
+   /// let mut lock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
    /// *lock.get_mut() = 10;
    /// assert_eq!(*lock.read(), 10);
    /// ```
@@ -357,7 +379,7 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLock<T> {
+impl<T: ?Sized + fmt::Debug, S: SchedulerInfluence> fmt::Debug for RwLock<T, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.try_read() {
             Some(guard) => write!(f, "RwLock {{ data: ")
@@ -368,15 +390,15 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for RwLock<T> {
     }
 }
 
-impl<T: ?Sized + Default> Default for RwLock<T> {
-    fn default() -> RwLock<T> {
+impl<T: ?Sized + Default, S: SchedulerInfluence> Default for RwLock<T, S> {
+    fn default() -> RwLock<T, S> {
         RwLock::new(Default::default())
     }
 }
 
-impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockUpgradeableGuard<'rwlock, T, S> {
     #[inline(always)]
-    fn try_upgrade_internal(self, strong: bool) -> Result<RwLockWriteGuard<'rwlock, T>, Self> {
+    fn try_upgrade_internal(self, strong: bool) -> Result<RwLockWriteGuard<'rwlock, T, S>, Self> {
         if compare_exchange(
             &self.lock,
             UPGRADED,
@@ -392,6 +414,7 @@ impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
                 lock: &self.lock,
                 data: self.data,
                 _invariant: PhantomData,
+                state: self.state,
             });
 
             // Forget the old guard so its destructor doesn't run
@@ -406,13 +429,14 @@ impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
     /// Upgrades an upgradeable lock guard to a writable lock guard.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     ///
     /// let upgradeable = mylock.upgradeable_read(); // Readable, but not yet writable
     /// let writable = upgradeable.upgrade();
     /// ```
     #[inline]
-    pub fn upgrade(mut self) -> RwLockWriteGuard<'rwlock, T> {
+    pub fn upgrade(mut self) -> RwLockWriteGuard<'rwlock, T, S> {
         loop {
             self = match self.try_upgrade_internal(false) {
                 Ok(guard) => return guard,
@@ -426,7 +450,8 @@ impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
     /// Tries to upgrade an upgradeable lock guard to a writable lock guard.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     /// let upgradeable = mylock.upgradeable_read(); // Readable, but not yet writable
     ///
     /// match upgradeable.try_upgrade() {
@@ -435,7 +460,7 @@ impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
     /// };
     /// ```
     #[inline]
-    pub fn try_upgrade(self) -> Result<RwLockWriteGuard<'rwlock, T>, Self> {
+    pub fn try_upgrade(self) -> Result<RwLockWriteGuard<'rwlock, T, S>, Self> {
         self.try_upgrade_internal(true)
     }
 
@@ -443,7 +468,8 @@ impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
     /// Downgrades the upgradeable lock guard to a readable, shared lock guard. Cannot fail and is guaranteed not to spin.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(1);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(1);
     ///
     /// let upgradeable = mylock.upgradeable_read();
     /// assert!(mylock.try_read().is_none());
@@ -453,24 +479,26 @@ impl<'rwlock, T: ?Sized> RwLockUpgradeableGuard<'rwlock, T> {
     /// assert!(mylock.try_read().is_some());
     /// assert_eq!(*readable, 1);
     /// ```
-    pub fn downgrade(self) -> RwLockReadGuard<'rwlock, T> {
+    pub fn downgrade(self) -> RwLockReadGuard<'rwlock, T, S> {
         // Reserve the read guard for ourselves
         self.lock.fetch_add(READER, Ordering::Acquire);
 
         RwLockReadGuard {
             lock: &self.lock,
             data: self.data,
+            state: self.state,
         }
 
         // Dropping self removes the UPGRADED bit
     }
 }
 
-impl<'rwlock, T: ?Sized> RwLockWriteGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockWriteGuard<'rwlock, T, S> {
     /// Downgrades the writable lock guard to a readable, shared lock guard. Cannot fail and is guaranteed not to spin.
     ///
     /// ```
-    /// let mylock = spin::RwLock::new(0);
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mylock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
     ///
     /// let mut writable = mylock.write();
     /// *writable = 1;
@@ -480,20 +508,21 @@ impl<'rwlock, T: ?Sized> RwLockWriteGuard<'rwlock, T> {
     /// assert_eq!(*readable, 1);
     /// ```
     #[inline]
-    pub fn downgrade(self) -> RwLockReadGuard<'rwlock, T> {
+    pub fn downgrade(self) -> RwLockReadGuard<'rwlock, T, S> {
         // Reserve the read guard for ourselves
         self.lock.fetch_add(READER, Ordering::Acquire);
 
         RwLockReadGuard {
             lock: &self.lock,
             data: self.data,
+            state: self.state,
         }
 
         // Dropping self removes the WRITER bit
     }
 }
 
-impl<'rwlock, T: ?Sized> Deref for RwLockReadGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> Deref for RwLockReadGuard<'rwlock, T, S> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -501,7 +530,7 @@ impl<'rwlock, T: ?Sized> Deref for RwLockReadGuard<'rwlock, T> {
     }
 }
 
-impl<'rwlock, T: ?Sized> Deref for RwLockUpgradeableGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> Deref for RwLockUpgradeableGuard<'rwlock, T, S> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -509,7 +538,7 @@ impl<'rwlock, T: ?Sized> Deref for RwLockUpgradeableGuard<'rwlock, T> {
     }
 }
 
-impl<'rwlock, T: ?Sized> Deref for RwLockWriteGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> Deref for RwLockWriteGuard<'rwlock, T, S> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -517,20 +546,20 @@ impl<'rwlock, T: ?Sized> Deref for RwLockWriteGuard<'rwlock, T> {
     }
 }
 
-impl<'rwlock, T: ?Sized> DerefMut for RwLockWriteGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> DerefMut for RwLockWriteGuard<'rwlock, T, S> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { self.data.as_mut() }
     }
 }
 
-impl<'rwlock, T: ?Sized> Drop for RwLockReadGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> Drop for RwLockReadGuard<'rwlock, T, S> {
     fn drop(&mut self) {
         debug_assert!(self.lock.load(Ordering::Relaxed) & !(WRITER | UPGRADED) > 0);
         self.lock.fetch_sub(READER, Ordering::Release);
     }
 }
 
-impl<'rwlock, T: ?Sized> Drop for RwLockUpgradeableGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> Drop for RwLockUpgradeableGuard<'rwlock, T, S> {
     fn drop(&mut self) {
         debug_assert_eq!(
             self.lock.load(Ordering::Relaxed) & (WRITER | UPGRADED),
@@ -540,7 +569,7 @@ impl<'rwlock, T: ?Sized> Drop for RwLockUpgradeableGuard<'rwlock, T> {
     }
 }
 
-impl<'rwlock, T: ?Sized> Drop for RwLockWriteGuard<'rwlock, T> {
+impl<'rwlock, T: ?Sized, S: SchedulerInfluence> Drop for RwLockWriteGuard<'rwlock, T, S> {
     fn drop(&mut self) {
         debug_assert_eq!(self.lock.load(Ordering::Relaxed) & WRITER, WRITER);
 
@@ -576,13 +605,14 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use NoOpSchedulerInfluence;
 
     #[derive(Eq, PartialEq, Debug)]
     struct NonCopy(i32);
 
     #[test]
     fn smoke() {
-        let l = RwLock::new(());
+        let l: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(());
         drop(l.read());
         drop(l.write());
         drop((l.read(), l.read()));
@@ -618,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_rw_arc() {
-        let arc = Arc::new(RwLock::new(0));
+        let arc = Arc::new(RwLock::<_, NoOpSchedulerInfluence>::new(0));
         let arc2 = arc.clone();
         let (tx, rx) = channel();
 
@@ -660,7 +690,7 @@ mod tests {
         let arc2 = arc.clone();
         let _ = thread::spawn(move || -> () {
             struct Unwinder {
-                i: Arc<RwLock<isize>>,
+                i: Arc<RwLock<isize, NoOpSchedulerInfluence>>,
             }
             impl Drop for Unwinder {
                 fn drop(&mut self) {
@@ -678,7 +708,7 @@ mod tests {
 
     #[test]
     fn test_rwlock_unsized() {
-        let rw: &RwLock<[i32]> = &RwLock::new([1, 2, 3]);
+        let rw: &RwLock<[i32], NoOpSchedulerInfluence> = &RwLock::new([1, 2, 3]);
         {
             let b = &mut *rw.write();
             b[0] = 4;
@@ -692,7 +722,7 @@ mod tests {
     fn test_rwlock_try_write() {
         use std::mem::drop;
 
-        let lock = RwLock::new(0isize);
+        let lock: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(0isize);
         let read_guard = lock.read();
 
         let write_result = lock.try_write();
@@ -709,14 +739,14 @@ mod tests {
 
     #[test]
     fn test_rw_try_read() {
-        let m = RwLock::new(0);
+        let m: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(0);
         mem::forget(m.write());
         assert!(m.try_read().is_none());
     }
 
     #[test]
     fn test_into_inner() {
-        let m = RwLock::new(NonCopy(10));
+        let m: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(NonCopy(10));
         assert_eq!(m.into_inner(), NonCopy(10));
     }
 
@@ -729,7 +759,7 @@ mod tests {
             }
         }
         let num_drops = Arc::new(AtomicUsize::new(0));
-        let m = RwLock::new(Foo(num_drops.clone()));
+        let m: RwLock<Foo, NoOpSchedulerInfluence> = RwLock::new(Foo(num_drops.clone()));
         assert_eq!(num_drops.load(Ordering::SeqCst), 0);
         {
             let _inner = m.into_inner();
@@ -740,7 +770,7 @@ mod tests {
 
     #[test]
     fn test_force_read_decrement() {
-        let m = RwLock::new(());
+        let m: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(());
         ::std::mem::forget(m.read());
         ::std::mem::forget(m.read());
         ::std::mem::forget(m.read());
@@ -758,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_force_write_unlock() {
-        let m = RwLock::new(());
+        let m: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(());
         ::std::mem::forget(m.write());
         assert!(m.try_read().is_none());
         unsafe {
@@ -769,7 +799,7 @@ mod tests {
 
     #[test]
     fn test_upgrade_downgrade() {
-        let m = RwLock::new(());
+        let m: RwLock<_, NoOpSchedulerInfluence> = RwLock::new(());
         {
             let _r = m.read();
             let upg = m.try_upgradeable_read().unwrap();
