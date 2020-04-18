@@ -229,6 +229,11 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
         // there's no need to lock the inner mutex.
         unsafe { &mut *self.data.get() }
     }
+
+    /// Returns a reference to the cell containing the underlying data.
+    pub unsafe fn get_cell(&self) -> &UnsafeCell<T> {
+        &self.data
+    }
 }
 
 impl<T: ?Sized + fmt::Debug, S: SchedulerInfluence> fmt::Debug for Mutex<T, S>
