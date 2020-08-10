@@ -356,19 +356,19 @@ impl<T: ?Sized, S: SchedulerInfluence> RwLock<T, S> {
         }
     }
 
-   /// Returns a mutable reference to the underlying data.
-   ///
-   /// Since this call borrows the `RwLock` mutably, no actual locking needs to
-   /// take place -- the mutable borrow statically guarantees no locks exist.
-   ///
-   /// # Examples
-   ///
-   /// ```
-   /// use spin::NoOpSchedulerInfluence;
-   /// let mut lock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
-   /// *lock.get_mut() = 10;
-   /// assert_eq!(*lock.read(), 10);
-   /// ```
+    /// Returns a mutable reference to the underlying data.
+    ///
+    /// Since this call borrows the `RwLock` mutably, no actual locking needs to
+    /// take place -- the mutable borrow statically guarantees no locks exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spin::NoOpSchedulerInfluence;
+    /// let mut lock = spin::RwLock::<_, NoOpSchedulerInfluence>::new(0);
+    /// *lock.get_mut() = 10;
+    /// assert_eq!(*lock.read(), 10);
+    /// ```
     pub fn get_mut(&mut self) -> &mut T {
         // We know statically that there are no other references to `self`, so
         // there's no need to lock the inner lock.
@@ -395,7 +395,10 @@ impl<T: ?Sized + Default, S: SchedulerInfluence> Default for RwLock<T, S> {
 
 impl<'rwlock, T: ?Sized, S: SchedulerInfluence> RwLockUpgradeableGuard<'rwlock, T, S> {
     #[inline(always)]
-    fn try_upgrade_internal(mut self, strong: bool) -> Result<RwLockWriteGuard<'rwlock, T, S>, Self> {
+    fn try_upgrade_internal(
+        mut self,
+        strong: bool,
+    ) -> Result<RwLockWriteGuard<'rwlock, T, S>, Self> {
         if compare_exchange(
             &self.lock,
             UPGRADED,

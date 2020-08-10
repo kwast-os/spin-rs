@@ -1,10 +1,10 @@
-use core::sync::atomic::{AtomicBool, Ordering, spin_loop_hint as cpu_relax};
 use core::cell::UnsafeCell;
-use core::marker::{Sync, PhantomData};
-use core::ops::{Drop, Deref, DerefMut};
-use core::fmt;
-use core::option::Option::{self, None, Some};
 use core::default::Default;
+use core::fmt;
+use core::marker::{PhantomData, Sync};
+use core::ops::{Deref, DerefMut, Drop};
+use core::option::Option::{self, None, Some};
+use core::sync::atomic::{spin_loop_hint as cpu_relax, AtomicBool, Ordering};
 use scheduler::SchedulerInfluence;
 
 /// This type provides MUTual EXclusion based on spinning.
@@ -72,8 +72,7 @@ use scheduler::SchedulerInfluence;
 /// let answer = { *spin_mutex.lock() };
 /// assert_eq!(answer, numthreads);
 /// ```
-pub struct Mutex<T: ?Sized, S: SchedulerInfluence>
-{
+pub struct Mutex<T: ?Sized, S: SchedulerInfluence> {
     lock: AtomicBool,
     _marker: PhantomData<S>,
     data: UnsafeCell<T>,
@@ -83,8 +82,7 @@ pub struct Mutex<T: ?Sized, S: SchedulerInfluence>
 ///
 /// When the guard falls out of scope it will release the lock.
 #[derive(Debug)]
-pub struct MutexGuard<'a, T: ?Sized + 'a, S: SchedulerInfluence>
-{
+pub struct MutexGuard<'a, T: ?Sized + 'a, S: SchedulerInfluence> {
     lock: &'a AtomicBool,
     data: &'a mut T,
     state: S,
@@ -94,8 +92,7 @@ pub struct MutexGuard<'a, T: ?Sized + 'a, S: SchedulerInfluence>
 unsafe impl<T: ?Sized + Send, S: SchedulerInfluence> Sync for Mutex<T, S> {}
 unsafe impl<T: ?Sized + Send, S: SchedulerInfluence> Send for Mutex<T, S> {}
 
-impl<T, S: SchedulerInfluence> Mutex<T, S>
-{
+impl<T, S: SchedulerInfluence> Mutex<T, S> {
     /// Creates a new spinlock wrapping the supplied data.
     ///
     /// May be used statically:
@@ -111,10 +108,8 @@ impl<T, S: SchedulerInfluence> Mutex<T, S>
     ///     drop(lock);
     /// }
     /// ```
-    pub const fn new(user_data: T) -> Mutex<T, S>
-    {
-        Mutex
-        {
+    pub const fn new(user_data: T) -> Mutex<T, S> {
+        Mutex {
             lock: AtomicBool::new(false),
             _marker: PhantomData,
             data: UnsafeCell::new(user_data),
@@ -130,19 +125,15 @@ impl<T, S: SchedulerInfluence> Mutex<T, S>
     }
 }
 
-impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
-{
-    fn obtain_lock(&self) -> S
-    {
+impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S> {
+    fn obtain_lock(&self) -> S {
         let mut state = S::activate();
 
-        while self.lock.compare_and_swap(false, true, Ordering::Acquire) != false
-        {
+        while self.lock.compare_and_swap(false, true, Ordering::Acquire) != false {
             drop(state);
 
             // Wait until the lock looks unlocked before retrying
-            while self.lock.load(Ordering::Relaxed)
-            {
+            while self.lock.load(Ordering::Relaxed) {
                 cpu_relax();
             }
 
@@ -168,11 +159,9 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
     /// }
     ///
     /// ```
-    pub fn lock(&self) -> MutexGuard<T, S>
-    {
+    pub fn lock(&self) -> MutexGuard<T, S> {
         let state = self.obtain_lock();
-        MutexGuard
-        {
+        MutexGuard {
             lock: &self.lock,
             data: unsafe { &mut *self.data.get() },
             state,
@@ -192,21 +181,15 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
 
     /// Tries to lock the mutex. If it is already locked, it will return None. Otherwise it returns
     /// a guard within Some.
-    pub fn try_lock(&self) -> Option<MutexGuard<T, S>>
-    {
+    pub fn try_lock(&self) -> Option<MutexGuard<T, S>> {
         let state = S::activate();
-        if self.lock.compare_and_swap(false, true, Ordering::Acquire) == false
-        {
-            Some(
-                MutexGuard {
-                    lock: &self.lock,
-                    data: unsafe { &mut *self.data.get() },
-                    state,
-                }
-            )
-        }
-        else
-        {
+        if self.lock.compare_and_swap(false, true, Ordering::Acquire) == false {
+            Some(MutexGuard {
+                lock: &self.lock,
+                data: unsafe { &mut *self.data.get() },
+                state,
+            })
+        } else {
             None
         }
     }
@@ -236,15 +219,12 @@ impl<T: ?Sized, S: SchedulerInfluence> Mutex<T, S>
     }
 }
 
-impl<T: ?Sized + fmt::Debug, S: SchedulerInfluence> fmt::Debug for Mutex<T, S>
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
-    {
-        match self.try_lock()
-        {
+impl<T: ?Sized + fmt::Debug, S: SchedulerInfluence> fmt::Debug for Mutex<T, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.try_lock() {
             Some(guard) => write!(f, "Mutex {{ data: ")
-				.and_then(|()| (&*guard).fmt(f))
-				.and_then(|()| write!(f, "}}")),
+                .and_then(|()| (&*guard).fmt(f))
+                .and_then(|()| write!(f, "}}")),
             None => write!(f, "Mutex {{ <locked> }}"),
         }
     }
@@ -256,22 +236,22 @@ impl<T: ?Sized + Default, S: SchedulerInfluence> Default for Mutex<T, S> {
     }
 }
 
-impl<'a, T: ?Sized, S: SchedulerInfluence> Deref for MutexGuard<'a, T, S>
-{
+impl<'a, T: ?Sized, S: SchedulerInfluence> Deref for MutexGuard<'a, T, S> {
     type Target = T;
-    fn deref(&self) -> &T { &*self.data }
+    fn deref(&self) -> &T {
+        &*self.data
+    }
 }
 
-impl<'a, T: ?Sized, S: SchedulerInfluence> DerefMut for MutexGuard<'a, T, S>
-{
-    fn deref_mut(&mut self) -> &mut T { &mut *self.data }
+impl<'a, T: ?Sized, S: SchedulerInfluence> DerefMut for MutexGuard<'a, T, S> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut *self.data
+    }
 }
 
-impl<'a, T: ?Sized, S: SchedulerInfluence> Drop for MutexGuard<'a, T, S>
-{
+impl<'a, T: ?Sized, S: SchedulerInfluence> Drop for MutexGuard<'a, T, S> {
     /// The dropping of the MutexGuard will release the lock it was created from.
-    fn drop(&mut self)
-    {
+    fn drop(&mut self) {
         self.lock.store(false, Ordering::Release);
     }
 }
@@ -280,9 +260,9 @@ impl<'a, T: ?Sized, S: SchedulerInfluence> Drop for MutexGuard<'a, T, S>
 mod tests {
     use std::prelude::v1::*;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::channel;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
     use super::*;
@@ -300,7 +280,7 @@ mod tests {
 
     #[test]
     fn lots_and_lots() {
-        static M: Mutex<(), NoOpSchedulerInfluence>  = Mutex::new(());
+        static M: Mutex<(), NoOpSchedulerInfluence> = Mutex::new(());
         static mut CNT: u32 = 0;
         const J: u32 = 1000;
         const K: u32 = 3;
@@ -317,16 +297,22 @@ mod tests {
         let (tx, rx) = channel();
         for _ in 0..K {
             let tx2 = tx.clone();
-            thread::spawn(move|| { inc(); tx2.send(()).unwrap(); });
+            thread::spawn(move || {
+                inc();
+                tx2.send(()).unwrap();
+            });
             let tx2 = tx.clone();
-            thread::spawn(move|| { inc(); tx2.send(()).unwrap(); });
+            thread::spawn(move || {
+                inc();
+                tx2.send(()).unwrap();
+            });
         }
 
         drop(tx);
         for _ in 0..2 * K {
             rx.recv().unwrap();
         }
-        assert_eq!(unsafe {CNT}, J * K * 2);
+        assert_eq!(unsafe { CNT }, J * K * 2);
     }
 
     #[test]
@@ -378,7 +364,7 @@ mod tests {
         let arc = Arc::new(Mutex::<i32, NoOpSchedulerInfluence>::new(1));
         let arc2 = Arc::new(Mutex::<_, NoOpSchedulerInfluence>::new(arc));
         let (tx, rx) = channel();
-        let _t = thread::spawn(move|| {
+        let _t = thread::spawn(move || {
             let lock = arc2.lock();
             let lock2 = lock.lock();
             assert_eq!(*lock2, 1);
@@ -391,7 +377,7 @@ mod tests {
     fn test_mutex_arc_access_in_unwind() {
         let arc = Arc::new(Mutex::new(1));
         let arc2 = arc.clone();
-        let _ = thread::spawn(move|| -> () {
+        let _ = thread::spawn(move || -> () {
             struct Unwinder {
                 i: Arc<Mutex<i32, NoOpSchedulerInfluence>>,
             }
@@ -402,7 +388,8 @@ mod tests {
             }
             let _u = Unwinder { i: arc2 };
             panic!();
-        }).join();
+        })
+        .join();
         let lock = arc.lock();
         assert_eq!(*lock, 2);
     }
@@ -425,7 +412,7 @@ mod tests {
         ::std::mem::forget(lock.lock());
         unsafe {
             lock.force_unlock();
-        } 
+        }
         assert!(lock.try_lock().is_some());
     }
 }

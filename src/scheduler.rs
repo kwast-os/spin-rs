@@ -9,5 +9,7 @@ pub trait SchedulerInfluence: Sized {
 pub struct NoOpSchedulerInfluence {}
 
 impl SchedulerInfluence for NoOpSchedulerInfluence {
-    fn activate() -> Self { Self {} }
+    fn activate() -> Self {
+        Self {}
+    }
 }
