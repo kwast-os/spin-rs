@@ -88,6 +88,8 @@ pub struct MutexGuard<'a, T: ?Sized + 'a, S: SchedulerInfluence> {
     state: S,
 }
 
+impl<T: ?Sized, S: SchedulerInfluence> !Send for MutexGuard<'_, T, S> {}
+
 // Same unsafe impls as `std::sync::Mutex`
 unsafe impl<T: ?Sized + Send, S: SchedulerInfluence> Sync for Mutex<T, S> {}
 unsafe impl<T: ?Sized + Send, S: SchedulerInfluence> Send for Mutex<T, S> {}

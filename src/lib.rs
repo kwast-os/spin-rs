@@ -1,5 +1,6 @@
 #![crate_type = "lib"]
 #![feature(const_fn)]
+#![feature(negative_impls)]
 #![warn(missing_docs)]
 
 //! Synchronization primitives based on spinning
